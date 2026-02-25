@@ -64,7 +64,7 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
-`vinext deploy` options: `--preview`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
+`vinext deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
 
 `vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
@@ -96,7 +96,7 @@ Use `--force` to overwrite an existing `vite.config.ts`, or `--skip-check` to sk
 
 ## Why
 
-Vite has become the default build tool for modern web frameworks — fast HMR, a clean plugin API, native ESM, and a growing ecosystem. With [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-rsc) adding React Server Components support, it's now possible to build a full RSC framework on Vite.
+Vite has become the default build tool for modern web frameworks — fast HMR, a clean plugin API, native ESM, and a growing ecosystem. With [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) adding React Server Components support, it's now possible to build a full RSC framework on Vite.
 
 vinext is an experiment: can we reimplement the Next.js API surface on Vite, so that existing Next.js applications can run on a completely different toolchain? The answer, so far, is mostly yes — about 94% of the API surface works.
 
@@ -157,7 +157,10 @@ We track the public Next.js API surface and add support for new stable features.
 
 ```bash
 vinext deploy
+vinext deploy --env staging
 ```
+
+Use `--env <name>` to target `wrangler.jsonc` `env.<name>`. `--preview` is shorthand for `--env preview`.
 
 The deploy command also auto-detects and fixes common migration issues:
 - Adds `"type": "module"` to package.json if missing
