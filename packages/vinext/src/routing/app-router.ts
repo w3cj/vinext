@@ -62,6 +62,8 @@ export interface AppRoute {
   layouts: string[];
   /** Ordered list of template files from root to leaf (parallel to layouts) */
   templates: string[];
+  /** Ordered list of proxy files from root to leaf (route-level middleware) */
+  proxies: string[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];
   /** Loading component path */
@@ -268,6 +270,7 @@ function discoverSlotSubRoutes(
         routePath: null,
         layouts: parentRoute.layouts,
         templates: parentRoute.templates,
+        proxies: parentRoute.proxies,
         parallelSlots: subSlots,
         loadingPath: parentRoute.loadingPath,
         errorPath: parentRoute.errorPath,
@@ -386,9 +389,10 @@ function fileToAppRoute(
 
   const pattern = "/" + urlSegments.join("/");
 
-  // Discover layouts and templates from root to leaf
+  // Discover layouts, templates, and proxies from root to leaf
   const layouts = discoverLayouts(segments, appDir);
   const templates = discoverTemplates(segments, appDir);
+  const proxies = discoverProxies(segments, appDir);
 
   // Compute the URL segment depth for each layout.
   // Each layout corresponds to a directory level. We need to count how many
@@ -439,6 +443,7 @@ function fileToAppRoute(
     routePath: type === "route" ? path.join(appDir, file) : null,
     layouts,
     templates,
+    proxies,
     parallelSlots,
     loadingPath,
     errorPath,
@@ -536,6 +541,34 @@ function discoverTemplates(segments: string[], appDir: string): string[] {
   }
 
   return templates;
+}
+
+/**
+ * Discover all proxy files from root to the given directory.
+ * Each level of the directory tree may have a proxy.ts (preferred) or middleware.ts (legacy).
+ * Skips @-prefixed segments (parallel slots have no per-slot proxy semantics).
+ */
+function discoverProxies(segments: string[], appDir: string): string[] {
+  const proxies: string[] = [];
+
+  // Check root proxy
+  const rootProxy = findFile(appDir, "proxy") ?? findFile(appDir, "middleware");
+  if (rootProxy) proxies.push(rootProxy);
+
+  // Check each directory level
+  let currentDir = appDir;
+  for (const segment of segments) {
+    // Skip @-prefixed segments (parallel slots)
+    if (segment.startsWith("@")) {
+      currentDir = path.join(currentDir, segment);
+      continue;
+    }
+    currentDir = path.join(currentDir, segment);
+    const proxy = findFile(currentDir, "proxy") ?? findFile(currentDir, "middleware");
+    if (proxy) proxies.push(proxy);
+  }
+
+  return proxies;
 }
 
 /**
