@@ -1415,6 +1415,7 @@ describe("App Router Static export", () => {
         layouts: [],
         templates: [],
         parallelSlots: [],
+        proxies: [],
         layoutSegmentDepths: [],
         loadingPath: null,
         errorPath: null,
@@ -1466,6 +1467,7 @@ describe("App Router Static export", () => {
         layouts: [],
         templates: [],
         parallelSlots: [],
+        proxies: [],
         layoutSegmentDepths: [],
         loadingPath: null,
         errorPath: null,
@@ -1713,6 +1715,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       layouts: ["/tmp/test/app/layout.tsx"],
       templates: [],
       parallelSlots: [],
+      proxies: [],
       loadingPath: null,
       errorPath: null,
       layoutErrorPaths: [null],
@@ -1730,6 +1733,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       layouts: ["/tmp/test/app/layout.tsx"],
       templates: [],
       parallelSlots: [],
+      proxies: [],
       loadingPath: null,
       errorPath: null,
       layoutErrorPaths: [null],
@@ -1747,6 +1751,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       layouts: ["/tmp/test/app/layout.tsx"],
       templates: [],
       parallelSlots: [],
+      proxies: [],
       loadingPath: null,
       errorPath: null,
       layoutErrorPaths: [null],
@@ -2299,5 +2304,171 @@ describe("RSC plugin auto-registration", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Route-level proxy discovery (discoverProxies)", () => {
+  let tmpDir: string;
+
+  function createFile(relativePath: string, content = "export default function() {}") {
+    const filePath = path.join(tmpDir, relativePath);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content);
+    return filePath;
+  }
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-proxy-test-"));
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("discovers proxy files from root to leaf", async () => {
+    const appDir = path.join(tmpDir, "app-basic");
+
+    // Create a nested route with proxy files at root and nested level
+    createFile("app-basic/layout.tsx");
+    createFile("app-basic/proxy.ts");
+    createFile("app-basic/dashboard/layout.tsx");
+    createFile("app-basic/dashboard/proxy.ts");
+    createFile("app-basic/dashboard/settings/page.tsx");
+
+    const { appRouter, invalidateAppRouteCache } = await import(
+      "../packages/vinext/src/routing/app-router.js"
+    );
+    invalidateAppRouteCache();
+    const routes = await appRouter(appDir);
+
+    const settingsRoute = routes.find((r) => r.pattern === "/dashboard/settings");
+    expect(settingsRoute).toBeDefined();
+    expect(settingsRoute!.proxies).toHaveLength(2);
+    expect(settingsRoute!.proxies[0]).toContain("app-basic" + path.sep + "proxy.ts");
+    expect(settingsRoute!.proxies[1]).toContain("dashboard" + path.sep + "proxy.ts");
+  });
+
+  it("falls back to middleware.ts when proxy.ts is not present", async () => {
+    const appDir = path.join(tmpDir, "app-mw-fallback");
+
+    createFile("app-mw-fallback/layout.tsx");
+    createFile("app-mw-fallback/middleware.ts");
+    createFile("app-mw-fallback/page.tsx");
+
+    const { appRouter, invalidateAppRouteCache } = await import(
+      "../packages/vinext/src/routing/app-router.js"
+    );
+    invalidateAppRouteCache();
+    const routes = await appRouter(appDir);
+
+    const rootRoute = routes.find((r) => r.pattern === "/");
+    expect(rootRoute).toBeDefined();
+    expect(rootRoute!.proxies).toHaveLength(1);
+    expect(rootRoute!.proxies[0]).toContain("middleware.ts");
+  });
+
+  it("prefers proxy.ts over middleware.ts at the same level", async () => {
+    const appDir = path.join(tmpDir, "app-prefer-proxy");
+
+    createFile("app-prefer-proxy/layout.tsx");
+    createFile("app-prefer-proxy/proxy.ts");
+    createFile("app-prefer-proxy/middleware.ts");
+    createFile("app-prefer-proxy/page.tsx");
+
+    const { appRouter, invalidateAppRouteCache } = await import(
+      "../packages/vinext/src/routing/app-router.js"
+    );
+    invalidateAppRouteCache();
+    const routes = await appRouter(appDir);
+
+    const rootRoute = routes.find((r) => r.pattern === "/");
+    expect(rootRoute).toBeDefined();
+    expect(rootRoute!.proxies).toHaveLength(1);
+    expect(rootRoute!.proxies[0]).toContain("proxy.ts");
+    expect(rootRoute!.proxies[0]).not.toContain("middleware.ts");
+  });
+
+  it("skips @slot directories in proxy discovery", async () => {
+    const appDir = path.join(tmpDir, "app-skip-slots");
+
+    createFile("app-skip-slots/layout.tsx");
+    createFile("app-skip-slots/proxy.ts");
+    createFile("app-skip-slots/page.tsx");
+    // A proxy inside a slot should NOT be discovered
+    createFile("app-skip-slots/@modal/proxy.ts");
+    createFile("app-skip-slots/@modal/default.tsx");
+
+    const { appRouter, invalidateAppRouteCache } = await import(
+      "../packages/vinext/src/routing/app-router.js"
+    );
+    invalidateAppRouteCache();
+    const routes = await appRouter(appDir);
+
+    const rootRoute = routes.find((r) => r.pattern === "/");
+    expect(rootRoute).toBeDefined();
+    // Only root proxy, not @modal/proxy
+    expect(rootRoute!.proxies).toHaveLength(1);
+    expect(rootRoute!.proxies[0]).not.toContain("@modal");
+  });
+
+  it("treats route groups as transparent for proxy discovery", async () => {
+    const appDir = path.join(tmpDir, "app-route-groups");
+
+    createFile("app-route-groups/layout.tsx");
+    createFile("app-route-groups/proxy.ts");
+    createFile("app-route-groups/(auth)/proxy.ts");
+    createFile("app-route-groups/(auth)/login/page.tsx");
+
+    const { appRouter, invalidateAppRouteCache } = await import(
+      "../packages/vinext/src/routing/app-router.js"
+    );
+    invalidateAppRouteCache();
+    const routes = await appRouter(appDir);
+
+    const loginRoute = routes.find((r) => r.pattern === "/login");
+    expect(loginRoute).toBeDefined();
+    // Root proxy + (auth) group proxy
+    expect(loginRoute!.proxies).toHaveLength(2);
+    expect(loginRoute!.proxies[0]).toContain("app-route-groups" + path.sep + "proxy.ts");
+    expect(loginRoute!.proxies[1]).toContain("(auth)" + path.sep + "proxy.ts");
+  });
+
+  it("returns empty proxies when no proxy files exist", async () => {
+    const appDir = path.join(tmpDir, "app-no-proxy");
+
+    createFile("app-no-proxy/layout.tsx");
+    createFile("app-no-proxy/page.tsx");
+
+    const { appRouter, invalidateAppRouteCache } = await import(
+      "../packages/vinext/src/routing/app-router.js"
+    );
+    invalidateAppRouteCache();
+    const routes = await appRouter(appDir);
+
+    const rootRoute = routes.find((r) => r.pattern === "/");
+    expect(rootRoute).toBeDefined();
+    expect(rootRoute!.proxies).toHaveLength(0);
+  });
+
+  it("propagates proxies to slot sub-routes", async () => {
+    const appDir = path.join(tmpDir, "app-slot-sub");
+
+    createFile("app-slot-sub/layout.tsx");
+    createFile("app-slot-sub/proxy.ts");
+    createFile("app-slot-sub/page.tsx");
+    createFile("app-slot-sub/@audience/default.tsx");
+    createFile("app-slot-sub/@audience/demographics/page.tsx");
+
+    const { appRouter, invalidateAppRouteCache } = await import(
+      "../packages/vinext/src/routing/app-router.js"
+    );
+    invalidateAppRouteCache();
+    const routes = await appRouter(appDir);
+
+    const demoRoute = routes.find((r) => r.pattern === "/demographics");
+    expect(demoRoute).toBeDefined();
+    // Synthetic slot sub-route should inherit parent's proxies
+    expect(demoRoute!.proxies).toHaveLength(1);
+    expect(demoRoute!.proxies[0]).toContain("proxy.ts");
   });
 });

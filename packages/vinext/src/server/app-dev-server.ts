@@ -70,6 +70,7 @@ export function generateRscEntry(
     if (route.routePath) getImportVar(route.routePath);
     for (const layout of route.layouts) getImportVar(layout);
     for (const tmpl of route.templates) getImportVar(tmpl);
+    for (const proxy of route.proxies || []) getImportVar(proxy);
     if (route.loadingPath) getImportVar(route.loadingPath);
     if (route.errorPath) getImportVar(route.errorPath);
     if (route.layoutErrorPaths) for (const ep of route.layoutErrorPaths) { if (ep) getImportVar(ep); }
@@ -95,6 +96,7 @@ export function generateRscEntry(
   const routeEntries = routes.map((route) => {
     const layoutVars = route.layouts.map((l) => getImportVar(l));
     const templateVars = route.templates.map((t) => getImportVar(t));
+    const proxyVars = (route.proxies || []).map((p) => getImportVar(p));
     const notFoundVars = (route.notFoundPaths || []).map((nf) => nf ? getImportVar(nf) : "null");
     const slotEntries = route.parallelSlots.map((slot) => {
       const interceptEntries = slot.interceptingRoutes.map((ir) => {
@@ -127,6 +129,7 @@ ${interceptEntries.join(",\n")}
     layouts: [${layoutVars.join(", ")}],
     layoutSegmentDepths: ${JSON.stringify(route.layoutSegmentDepths)},
     templates: [${templateVars.join(", ")}],
+    proxies: [${proxyVars.join(", ")}],
     errors: [${layoutErrorVars.join(", ")}],
     slots: {
 ${slotEntries.join(",\n")}
@@ -157,6 +160,9 @@ ${slotEntries.join(",\n")}
 
   // Global error boundary (app/global-error.tsx)
   const globalErrorVar = globalErrorPath ? getImportVar(globalErrorPath) : null;
+
+  // Check if any route has route-level proxies
+  const hasRouteProxies = routes.some(r => r.proxies.length > 0);
 
   // Build metadata route handling
   const effectiveMetaRoutes = metadataRoutes ?? [];
@@ -780,7 +786,7 @@ async function buildPageElement(route, params, opts, searchParams) {
   return element;
 }
 
-${middlewarePath ? `
+${(middlewarePath || hasRouteProxies) ? `
 function matchMiddlewarePath(pathname, matcher) {
   if (!matcher) return true;
   const patterns = typeof matcher === "string" ? [matcher]
@@ -795,6 +801,57 @@ function matchMiddlewarePath(pathname, matcher) {
     const re = __safeRegExp(reStr);
     return re ? re.test(pathname) : false;
   });
+}
+` : ""}
+
+${hasRouteProxies ? `
+/**
+ * Run route-level proxy chain (root-to-leaf).
+ * Returns { continue: true, responseHeaders?, rewriteUrl? } or { continue: false, response }.
+ */
+async function _runRouteProxies(proxyModules, request, pathname) {
+  const accumulatedHeaders = new Headers();
+  for (const mod of proxyModules) {
+    const fn = mod.default || mod.proxy || mod.middleware;
+    if (typeof fn !== "function") continue;
+    const matcher = mod.config?.matcher;
+    if (!matchMiddlewarePath(pathname, matcher)) continue;
+    try {
+      const nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+      const proxyResponse = await fn(nextRequest);
+      if (!proxyResponse) continue;
+      // x-middleware-next: continue chain, accumulate headers
+      if (proxyResponse.headers.get("x-middleware-next") === "1") {
+        for (const [key, value] of proxyResponse.headers) {
+          if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
+            accumulatedHeaders.set(key, value);
+          }
+        }
+        continue;
+      }
+      // Redirect (3xx): stop chain, return response
+      if (proxyResponse.status >= 300 && proxyResponse.status < 400) {
+        return { continue: false, response: proxyResponse };
+      }
+      // Rewrite: update pathname, accumulate headers, continue
+      const rewriteUrl = proxyResponse.headers.get("x-middleware-rewrite");
+      if (rewriteUrl) {
+        for (const [key, value] of proxyResponse.headers) {
+          if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
+            accumulatedHeaders.set(key, value);
+          }
+        }
+        return { continue: true, responseHeaders: accumulatedHeaders, rewriteUrl };
+      }
+      // Custom response (e.g. 403 block): stop chain, return response
+      return { continue: false, response: proxyResponse };
+    } catch (err) {
+      console.error("[vinext] Route proxy error:", err);
+      return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
+    }
+  }
+  // All proxies passed
+  return { continue: true, responseHeaders: accumulatedHeaders.keys().next().done ? null : accumulatedHeaders };
 }
 ` : ""}
 
@@ -1483,7 +1540,43 @@ async function _handleRequest(request) {
     return new Response("Not Found", { status: 404 });
   }
 
-  const { route, params } = match;
+  let { route, params } = match;
+
+  ${hasRouteProxies ? `
+  // Run route-level proxy chain (root-to-leaf) after route matching
+  if (route.proxies && route.proxies.length > 0) {
+    const _proxyResult = await _runRouteProxies(route.proxies, request, cleanPathname);
+    if (!_proxyResult.continue) {
+      setHeadersContext(null);
+      setNavigationContext(null);
+      return _proxyResult.response;
+    }
+    // Merge proxy response headers
+    if (_proxyResult.responseHeaders) {
+      if (!_middlewareResponseHeaders) _middlewareResponseHeaders = new Headers();
+      for (const [key, value] of _proxyResult.responseHeaders) {
+        _middlewareResponseHeaders.set(key, value);
+      }
+      // Apply x-middleware-request-* headers from route proxies
+      applyMiddlewareRequestHeaders(_proxyResult.responseHeaders);
+      for (const key of [..._proxyResult.responseHeaders.keys()]) {
+        if (key.startsWith("x-middleware-request-")) {
+          if (_middlewareResponseHeaders) _middlewareResponseHeaders.delete(key);
+        }
+      }
+    }
+    // Handle rewrite: re-match route
+    if (_proxyResult.rewriteUrl) {
+      const _proxyRewriteParsed = new URL(_proxyResult.rewriteUrl, request.url);
+      cleanPathname = _proxyRewriteParsed.pathname;
+      const _proxyRematch = matchRoute(cleanPathname, routes);
+      if (_proxyRematch) {
+        route = _proxyRematch.route;
+        params = _proxyRematch.params;
+      }
+    }
+  }
+  ` : ""}
 
   // Update navigation context with matched params
   setNavigationContext({
