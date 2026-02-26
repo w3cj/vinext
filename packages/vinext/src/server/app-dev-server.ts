@@ -70,7 +70,7 @@ export function generateRscEntry(
     if (route.routePath) getImportVar(route.routePath);
     for (const layout of route.layouts) getImportVar(layout);
     for (const tmpl of route.templates) getImportVar(tmpl);
-    for (const proxy of route.proxies) getImportVar(proxy);
+    for (const proxy of route.proxies || []) getImportVar(proxy);
     if (route.loadingPath) getImportVar(route.loadingPath);
     if (route.errorPath) getImportVar(route.errorPath);
     if (route.layoutErrorPaths) for (const ep of route.layoutErrorPaths) { if (ep) getImportVar(ep); }
@@ -96,7 +96,7 @@ export function generateRscEntry(
   const routeEntries = routes.map((route) => {
     const layoutVars = route.layouts.map((l) => getImportVar(l));
     const templateVars = route.templates.map((t) => getImportVar(t));
-    const proxyVars = route.proxies.map((p) => getImportVar(p));
+    const proxyVars = (route.proxies || []).map((p) => getImportVar(p));
     const notFoundVars = (route.notFoundPaths || []).map((nf) => nf ? getImportVar(nf) : "null");
     const slotEntries = route.parallelSlots.map((slot) => {
       const interceptEntries = slot.interceptingRoutes.map((ir) => {
